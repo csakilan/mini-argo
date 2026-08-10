@@ -1,0 +1,34 @@
+# Binaries and build output
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Test and coverage artifacts
+cover.out
+cover.html
+
+# envtest binaries downloaded by `make test`
+testbin/
+
+# Node — Phase 7 dashboard
+node_modules/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Working notes and AI-assistant files — not part of the app
+HANDOFF.md
+docs/
+CLAUDE.md
+AGENTS.md
+.claude/
