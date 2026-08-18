@@ -14,7 +14,17 @@ spec:
     singular: gitsource
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.lastSyncedCommit
+      name: Commit
+      type: string
+    - jsonPath: .status.lastSyncTime
+      name: Last Sync
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: GitSource is the Schema for the gitsources API
@@ -39,83 +49,113 @@ spec:
           spec:
             description: spec defines the desired state of GitSource
             properties:
-              foo:
-                description: foo is an example field of GitSource. Edit gitsource_types.go
-                  to remove/update
+              branch:
+                default: main
+                description: branch is the branch to read manifests from.
                 type: string
+              interval:
+                default: 30s
+                description: interval is how often to re-sync the cluster with the
+                  repository.
+                type: string
+              path:
+                default: .
+                description: path is the subdirectory within the repository to read.
+                  "." means the root.
+                type: string
+              prune:
+                default: false
+                description: prune enables deletion of objects that have been removed
+                  from Git.
+                type: boolean
+              repo:
+                description: repo is the public HTTPS URL of the Git repository to
+                  sync from.
+                type: string
+            required:
+            - repo
             type: object
           status:
             description: status defines the observed state of GitSource
             properties:
-              conditions:
-                description: |-
-                  conditions represent the current state of the GitSource resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+              driftedObjects:
+                description: driftedObjects lists objects the last sync had to correct.
                 items:
-                  description: Condition contains details for one aspect of the current
-                    state of this API Resource.
+                  description: ResourceRef identifies a single Kubernetes object this
+                    GitSource applied.
                   properties:
-                    lastTransitionTime:
-                      description: |-
-                        lastTransitionTime is the last time the condition transitioned from one status to another.
-                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
-                      format: date-time
+                    group:
+                      description: group is the API group of the object. Empty for
+                        core types such as Service.
                       type: string
-                    message:
-                      description: |-
-                        message is a human readable message indicating details about the transition.
-                        This may be an empty string.
-                      maxLength: 32768
+                    kind:
+                      description: kind is the kind of the object.
                       type: string
-                    observedGeneration:
-                      description: |-
-                        observedGeneration represents the .metadata.generation that the condition was set based upon.
-                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
-                        with respect to the current state of the instance.
-                      format: int64
-                      minimum: 0
-                      type: integer
-                    reason:
-                      description: |-
-                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
-                        Producers of specific condition types may define expected values and meanings for this field,
-                        and whether the values are considered a guaranteed API.
-                        The value should be a CamelCase string.
-                        This field may not be empty.
-                      maxLength: 1024
-                      minLength: 1
-                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                    name:
+                      description: name is the name of the object.
                       type: string
-                    status:
-                      description: status of the condition, one of True, False, Unknown.
-                      enum:
-                      - "True"
-                      - "False"
-                      - Unknown
+                    namespace:
+                      description: namespace is the namespace of the object. Empty
+                        for cluster-scoped objects.
                       type: string
-                    type:
-                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      maxLength: 316
-                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                    version:
+                      description: version is the API version of the object.
                       type: string
                   required:
-                  - lastTransitionTime
-                  - message
-                  - reason
-                  - status
-                  - type
+                  - kind
+                  - name
+                  - version
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
+              inventory:
+                description: inventory lists every object this GitSource currently
+                  owns.
+                items:
+                  description: ResourceRef identifies a single Kubernetes object this
+                    GitSource applied.
+                  properties:
+                    group:
+                      description: group is the API group of the object. Empty for
+                        core types such as Service.
+                      type: string
+                    kind:
+                      description: kind is the kind of the object.
+                      type: string
+                    name:
+                      description: name is the name of the object.
+                      type: string
+                    namespace:
+                      description: namespace is the namespace of the object. Empty
+                        for cluster-scoped objects.
+                      type: string
+                    version:
+                      description: version is the API version of the object.
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - version
+                  type: object
+                type: array
+              lastSyncTime:
+                description: lastSyncTime is when the last successful sync completed.
+                format: date-time
+                type: string
+              lastSyncedCommit:
+                description: lastSyncedCommit is the short commit SHA that was last
+                  applied.
+                type: string
+              message:
+                description: message explains the phase when something went wrong.
+                type: string
+              phase:
+                description: phase is a one-word summary of the last sync attempt.
+                enum:
+                - Pending
+                - Synced
+                - Drifted
+                - Error
+                type: string
             type: object
         required:
         - spec

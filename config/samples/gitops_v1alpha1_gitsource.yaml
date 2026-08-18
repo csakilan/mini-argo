@@ -6,4 +6,4 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: gitsource-sample
 spec:
-  foo: hello
+  repo: https://github.com/csakilan/mini-argo-demo
