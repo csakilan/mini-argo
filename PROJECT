@@ -8,4 +8,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: mini-argo
 repo: github.com/csakilan/mini-argo
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: miniargo.dev
+  group: gitops
+  kind: GitSource
+  path: github.com/csakilan/mini-argo/api/v1alpha1
+  version: v1alpha1
 version: "3"

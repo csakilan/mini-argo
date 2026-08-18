@@ -1,0 +1,9 @@
+apiVersion: gitops.miniargo.dev/v1alpha1
+kind: GitSource
+metadata:
+  labels:
+    app.kubernetes.io/name: mini-argo
+    app.kubernetes.io/managed-by: kustomize
+  name: gitsource-sample
+spec:
+  # TODO(user): Add fields here
