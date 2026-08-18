@@ -47,9 +47,8 @@ type GitSourceReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *GitSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
-
-	// TODO(user): your logic here
+	log := logf.FromContext(ctx)
+	log.Info("reconciling GitSource", "name", req.NamespacedName)
 
 	return ctrl.Result{}, nil
 }
