@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	gitopsv1alpha1 "github.com/csakilan/mini-argo/api/v1alpha1"
@@ -40,6 +40,13 @@ func (d DirFetcher) Fetch(ctx context.Context, spec gitopsv1alpha1.GitSourceSpec
 		return Snapshot{}, fmt.Errorf("path %q is a file, not a directory", spec.Path)
 	}
 
+	// Containment checks for symlink targets need the root with symlinks
+	// already resolved, otherwise a legitimate path fails the comparison.
+	realRoot, err := filepath.EvalSymlinks(d.Root)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("resolving root %q: %w", d.Root, err)
+	}
+
 	var paths []string
 	err = filepath.WalkDir(dir, func(p string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -51,10 +58,37 @@ func (d DirFetcher) Fetch(ctx context.Context, spec gitopsv1alpha1.GitSourceSpec
 		if entry.IsDir() {
 			return nil
 		}
+
 		switch strings.ToLower(filepath.Ext(p)) {
 		case ".yaml", ".yml":
-			paths = append(paths, p)
+		default:
+			return nil
 		}
+
+		// WalkDir uses lstat, so a symlinked directory arrives here as a
+		// non-directory and is never descended into. A symlinked *file*
+		// however would be followed by os.ReadFile, which is how a
+		// repository could point at anything on the host.
+		if entry.Type()&fs.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				return fmt.Errorf("resolving symlink %q: %w", p, err)
+			}
+			if !within(realRoot, target) {
+				return fmt.Errorf("%q is a symlink pointing outside the source root", p)
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				return fmt.Errorf("reading symlink target %q: %w", p, err)
+			}
+			if info.IsDir() {
+				// Consistent with WalkDir: symlinked directories are not
+				// traversed.
+				return nil
+			}
+		}
+
+		paths = append(paths, p)
 		return nil
 	})
 	if err != nil {
@@ -64,7 +98,7 @@ func (d DirFetcher) Fetch(ctx context.Context, spec gitopsv1alpha1.GitSourceSpec
 	// WalkDir already visits in lexical order, but sorting makes the guarantee
 	// explicit and independent of that implementation detail. A stable order
 	// matters because apply order is otherwise nondeterministic.
-	sort.Strings(paths)
+	slices.Sort(paths)
 
 	snap := Snapshot{}
 	for _, p := range paths {
@@ -98,13 +132,18 @@ func (d DirFetcher) resolve(specPath string) (string, error) {
 
 	target := filepath.Clean(filepath.Join(root, specPath))
 
-	rel, err := filepath.Rel(root, target)
-	if err != nil {
-		return "", fmt.Errorf("resolving path %q: %w", specPath, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !within(root, target) {
 		return "", fmt.Errorf("path %q escapes the repository root", specPath)
 	}
 
 	return target, nil
+}
+
+// within reports whether target is root itself or sits underneath it.
+func within(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

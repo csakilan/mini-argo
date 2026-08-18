@@ -66,6 +66,9 @@ func Parse(docs [][]byte) ([]*unstructured.Unstructured, error) {
 				continue
 			}
 
+			if obj.GetAPIVersion() == "" {
+				return nil, fmt.Errorf("input %d, document %d: object has no apiVersion", i, n)
+			}
 			if obj.GetKind() == "" {
 				return nil, fmt.Errorf("input %d, document %d: object has no kind", i, n)
 			}

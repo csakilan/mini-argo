@@ -127,7 +127,7 @@ func (r *GitSourceReconciler) applyObject(ctx context.Context, gs *gitopsv1alpha
 	labels[OwnedByLabel] = fmt.Sprintf("%s_%s", gs.Namespace, gs.Name)
 	obj.SetLabels(labels)
 
-	if err := r.Patch(ctx, obj, client.Apply,
+	if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj),
 		client.FieldOwner(FieldOwner),
 		client.ForceOwnership); err != nil {
 		return fmt.Errorf("%s: %w", ref, err)
