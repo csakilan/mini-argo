@@ -37,6 +37,7 @@ import (
 
 	gitopsv1alpha1 "github.com/csakilan/mini-argo/api/v1alpha1"
 	"github.com/csakilan/mini-argo/internal/controller"
+	"github.com/csakilan/mini-argo/internal/source"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -61,10 +62,14 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var sourceDir string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&sourceDir, "source-dir", ".",
+		"Root directory that a GitSource's spec.path is resolved against. "+
+			"Phase 3 reads manifests from local disk; Phase 5 replaces this with a Git clone.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -181,6 +186,7 @@ func main() {
 	if err := (&controller.GitSourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Source: source.DirFetcher{Root: sourceDir},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "gitsource")
 		os.Exit(1)
