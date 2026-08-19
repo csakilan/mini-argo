@@ -28,14 +28,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	gitopsv1alpha1 "github.com/csakilan/mini-argo/api/v1alpha1"
 	"github.com/csakilan/mini-argo/internal/drift"
+	"github.com/csakilan/mini-argo/internal/inventory"
 	"github.com/csakilan/mini-argo/internal/manifests"
 	"github.com/csakilan/mini-argo/internal/source"
 )
@@ -50,6 +54,11 @@ const (
 	// OwnedByLabel is stamped on every object applied, so it is possible to
 	// see at a glance which GitSource put an object there.
 	OwnedByLabel = "miniargo.dev/owned-by"
+
+	// FinalizerName is what stops the API server deleting a GitSource before
+	// this controller has had a chance to clean up after it. While it is
+	// present, a delete request only sets deletionTimestamp and waits.
+	FinalizerName = "gitops.miniargo.dev/finalizer"
 
 	// DefaultInterval is used when spec.interval is missing or not positive.
 	// A GitSource that never requeues would stop correcting drift entirely,
@@ -97,6 +106,20 @@ func (r *GitSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Being deleted. Clean up, then step out of the way.
+	if !gs.DeletionTimestamp.IsZero() {
+		return r.finalize(ctx, &gs)
+	}
+
+	// Claim the object before applying anything, so there is never a window
+	// where objects exist and nothing is registered to clean them up.
+	if !controllerutil.ContainsFinalizer(&gs, FinalizerName) {
+		controllerutil.AddFinalizer(&gs, FinalizerName)
+		if err := r.Update(ctx, &gs); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+	}
+
 	snap, err := r.Source.Fetch(ctx, gs.Spec)
 	if err != nil {
 		log.Error(err, "fetch failed")
@@ -106,6 +129,7 @@ func (r *GitSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			LastSyncedCommit: gs.Status.LastSyncedCommit,
 			LastSyncTime:     gs.Status.LastSyncTime,
 			DriftedObjects:   gs.Status.DriftedObjects,
+			Inventory:        gs.Status.Inventory,
 		})
 	}
 
@@ -118,35 +142,67 @@ func (r *GitSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			LastSyncedCommit: gs.Status.LastSyncedCommit,
 			LastSyncTime:     gs.Status.LastSyncTime,
 			DriftedObjects:   gs.Status.DriftedObjects,
+			Inventory:        gs.Status.Inventory,
 		})
 	}
 
 	var (
 		failures  []string
+		applied   []gitopsv1alpha1.ResourceRef
 		drifted   []gitopsv1alpha1.ResourceRef
 		summaries []string
 	)
 	for _, obj := range objs {
-		corrected, err := r.applyObject(ctx, &gs, obj)
+		result, err := r.applyObject(ctx, &gs, obj)
 		if err != nil {
 			failures = append(failures, err.Error())
 			continue
 		}
-		if corrected != nil {
-			drifted = append(drifted, corrected.ref)
-			summaries = append(summaries, corrected.summary)
-			log.Info("corrected drift", "object", corrected.summary)
+		applied = append(applied, result.ref)
+		if result.corrected {
+			drifted = append(drifted, result.ref)
+			summaries = append(summaries, result.summary)
+			log.Info("corrected drift", "object", result.summary)
 		}
 	}
 
 	if len(failures) > 0 {
 		log.Error(nil, "apply failed", "failures", len(failures), "total", len(objs))
-		// Keep the previous commit and sync time: this attempt did not succeed.
+		// Keep the previous commit, sync time, and inventory. This attempt did
+		// not succeed, and recording a partial inventory would tell the next
+		// pass to prune every object that merely failed to apply.
 		return r.report(ctx, &gs, gitopsv1alpha1.GitSourceStatus{
 			Phase:            PhaseError,
 			Message:          strings.Join(failures, "; "),
 			LastSyncedCommit: gs.Status.LastSyncedCommit,
 			LastSyncTime:     gs.Status.LastSyncTime,
+			Inventory:        gs.Status.Inventory,
+		})
+	}
+
+	// Pruning only happens on a clean pass, for the reason above.
+	var pruned []string
+	if gs.Spec.Prune {
+		for _, ref := range inventory.Diff(gs.Status.Inventory, applied) {
+			deleted, err := r.pruneRef(ctx, &gs, ref)
+			if err != nil {
+				failures = append(failures, err.Error())
+				continue
+			}
+			if deleted {
+				pruned = append(pruned, fmt.Sprintf("%s/%s", ref.Kind, ref.Name))
+				log.Info("pruned object removed from source", "kind", ref.Kind, "name", ref.Name, "namespace", ref.Namespace)
+			}
+		}
+	}
+
+	if len(failures) > 0 {
+		return r.report(ctx, &gs, gitopsv1alpha1.GitSourceStatus{
+			Phase:            PhaseError,
+			Message:          strings.Join(failures, "; "),
+			LastSyncedCommit: gs.Status.LastSyncedCommit,
+			LastSyncTime:     gs.Status.LastSyncTime,
+			Inventory:        gs.Status.Inventory,
 		})
 	}
 
@@ -155,14 +211,94 @@ func (r *GitSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		LastSyncedCommit: snap.Commit,
 		LastSyncTime:     &metav1.Time{Time: time.Now()},
 		DriftedObjects:   drifted,
+		Inventory:        applied,
 	}
-	if len(drifted) > 0 {
+	switch {
+	case len(drifted) > 0:
 		next.Phase = PhaseDrifted
 		next.Message = "corrected " + strings.Join(summaries, "; ")
+	case len(pruned) > 0:
+		next.Message = "pruned " + strings.Join(pruned, ", ")
 	}
 
-	log.Info("applied manifests", "objects", len(objs), "drifted", len(drifted), "commit", snap.Commit)
+	log.Info("applied manifests",
+		"objects", len(objs), "drifted", len(drifted), "pruned", len(pruned), "commit", snap.Commit)
 	return r.report(ctx, &gs, next)
+}
+
+// finalize runs when a GitSource is being deleted.
+//
+// Pruning is opt-in, so a GitSource with prune disabled leaves its objects
+// running. That is deliberate: deleting the GitSource is not a request to
+// delete the workloads, and silently tearing down production because somebody
+// removed a config object would be indefensible.
+func (r *GitSourceReconciler) finalize(ctx context.Context, gs *gitopsv1alpha1.GitSource) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(gs, FinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
+	if gs.Spec.Prune {
+		var failures []string
+		for _, ref := range gs.Status.Inventory {
+			if _, err := r.pruneRef(ctx, gs, ref); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+		if len(failures) > 0 {
+			// Keep the finalizer and try again. The object stays in a
+			// terminating state rather than disappearing with objects orphaned.
+			return ctrl.Result{}, fmt.Errorf("cleaning up: %s", strings.Join(failures, "; "))
+		}
+		log.Info("cleaned up owned objects", "count", len(gs.Status.Inventory))
+	} else {
+		log.Info("prune disabled, leaving owned objects in place", "count", len(gs.Status.Inventory))
+	}
+
+	controllerutil.RemoveFinalizer(gs, FinalizerName)
+	if err := r.Update(ctx, gs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// pruneRef deletes one object this GitSource used to own. It reports whether
+// anything was actually deleted.
+//
+// The ownership label is re-checked immediately before deleting. The inventory
+// alone is not proof: another GitSource may have taken the object over since,
+// in which case it is no longer ours to remove.
+func (r *GitSourceReconciler) pruneRef(ctx context.Context, gs *gitopsv1alpha1.GitSource, ref gitopsv1alpha1.ResourceRef) (bool, error) {
+	log := logf.FromContext(ctx)
+
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(schema.GroupVersionKind{Group: ref.Group, Version: ref.Version, Kind: ref.Kind})
+
+	err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, live)
+	switch {
+	case apierrors.IsNotFound(err), meta.IsNoMatchError(err):
+		// Already gone, or its kind no longer exists. Nothing to do.
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading %s/%s before pruning: %w", ref.Kind, ref.Name, err)
+	}
+
+	if owner := live.GetLabels()[OwnedByLabel]; owner != ownerValue(gs) {
+		log.Info("refusing to prune an object owned by someone else",
+			"kind", ref.Kind, "name", ref.Name, "owner", owner)
+		return false, nil
+	}
+
+	if err := r.Delete(ctx, live); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("deleting %s/%s: %w", ref.Kind, ref.Name, err)
+	}
+	return true, nil
+}
+
+// ownerValue is the label value identifying one GitSource.
+func ownerValue(gs *gitopsv1alpha1.GitSource) string {
+	return fmt.Sprintf("%s_%s", gs.Namespace, gs.Name)
 }
 
 // requeueAfter is the clock that makes drift correction continuous.
@@ -177,10 +313,11 @@ func requeueAfter(gs *gitopsv1alpha1.GitSource) time.Duration {
 	return gs.Spec.Interval.Duration
 }
 
-// correction describes one object that had drifted before this apply.
-type correction struct {
-	ref     gitopsv1alpha1.ResourceRef
-	summary string
+// applyOutcome records what happened to one object during a sync.
+type applyOutcome struct {
+	ref       gitopsv1alpha1.ResourceRef
+	corrected bool
+	summary   string
 }
 
 // applyObject stamps ownership onto one object, notes any drift, and
@@ -194,36 +331,47 @@ type correction struct {
 // The read below exists purely so drift can be *reported*. Delete it and the
 // controller still corrects everything, silently. Detection and correction are
 // two different jobs.
-func (r *GitSourceReconciler) applyObject(ctx context.Context, gs *gitopsv1alpha1.GitSource, obj *unstructured.Unstructured) (*correction, error) {
+func (r *GitSourceReconciler) applyObject(ctx context.Context, gs *gitopsv1alpha1.GitSource, obj *unstructured.Unstructured) (applyOutcome, error) {
 	name := fmt.Sprintf("%s %s", obj.GetKind(), obj.GetName())
 
 	if err := r.defaultNamespace(gs, obj); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return applyOutcome{}, fmt.Errorf("%s: %w", name, err)
 	}
 
 	labels := obj.GetLabels()
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels[OwnedByLabel] = fmt.Sprintf("%s_%s", gs.Namespace, gs.Name)
+	labels[OwnedByLabel] = ownerValue(gs)
 	obj.SetLabels(labels)
+
+	out := applyOutcome{ref: refFor(obj)}
 
 	corrected, err := r.detectDrift(ctx, obj)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return applyOutcome{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if corrected != nil {
+		out.corrected = true
+		out.summary = corrected.summary
 	}
 
 	if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj),
 		client.FieldOwner(FieldOwner),
 		client.ForceOwnership); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return applyOutcome{}, fmt.Errorf("%s: %w", name, err)
 	}
-	return corrected, nil
+	return out, nil
+}
+
+// driftSummary is the minimal shape detectDrift needs to report.
+type driftSummary struct {
+	summary string
 }
 
 // detectDrift reads the live object and compares it against the desired one.
 // A missing object is not drift: that is a creation.
-func (r *GitSourceReconciler) detectDrift(ctx context.Context, obj *unstructured.Unstructured) (*correction, error) {
+func (r *GitSourceReconciler) detectDrift(ctx context.Context, obj *unstructured.Unstructured) (*driftSummary, error) {
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(obj.GroupVersionKind())
 
@@ -239,8 +387,7 @@ func (r *GitSourceReconciler) detectDrift(ctx context.Context, obj *unstructured
 		return nil, nil
 	}
 
-	return &correction{
-		ref:     refFor(obj),
+	return &driftSummary{
 		summary: fmt.Sprintf("%s/%s (%s)", obj.GetKind(), obj.GetName(), drift.Summarise(fields, maxReportedFields)),
 	}, nil
 }
@@ -292,8 +439,6 @@ func (r *GitSourceReconciler) defaultNamespace(gs *gitopsv1alpha1.GitSource, obj
 // matters most when a GitSource is failing: a broken repository should not
 // generate an API write every reconcile forever.
 func (r *GitSourceReconciler) report(ctx context.Context, gs *gitopsv1alpha1.GitSource, next gitopsv1alpha1.GitSourceStatus) (ctrl.Result, error) {
-	next.Inventory = gs.Status.Inventory // Phase 6 owns this field.
-
 	if statusMeaningfullyEqual(gs.Status, next) {
 		return ctrl.Result{RequeueAfter: requeueAfter(gs)}, nil
 	}
@@ -311,7 +456,8 @@ func statusMeaningfullyEqual(a, b gitopsv1alpha1.GitSourceStatus) bool {
 	return a.Phase == b.Phase &&
 		a.Message == b.Message &&
 		a.LastSyncedCommit == b.LastSyncedCommit &&
-		slices.Equal(a.DriftedObjects, b.DriftedObjects)
+		slices.Equal(a.DriftedObjects, b.DriftedObjects) &&
+		slices.Equal(a.Inventory, b.Inventory)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -323,8 +469,19 @@ func (r *GitSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// writes status again, forever. Status writes do not bump
 	// metadata.generation, so filtering on generation lets the interval be the
 	// only thing that drives repeated syncs.
+	// A delete request only sets deletionTimestamp while a finalizer is
+	// present. If that update were filtered out, the finalizer would never be
+	// removed and the object would sit in Terminating forever, so it is
+	// allowed through explicitly rather than relying on generation changing.
+	deleting := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !e.ObjectNew.GetDeletionTimestamp().IsZero()
+		},
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&gitopsv1alpha1.GitSource{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&gitopsv1alpha1.GitSource{},
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, deleting))).
 		Named("gitsource").
 		Complete(r)
 }

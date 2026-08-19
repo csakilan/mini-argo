@@ -28,6 +28,12 @@ func writeManifest(dir, rel, content string) {
 	Expect(os.WriteFile(full, []byte(content), 0o644)).To(Succeed())
 }
 
+// removeManifest deletes a file from the source directory, simulating a
+// manifest being removed from the repository.
+func removeManifest(dir, rel string) error {
+	return os.Remove(filepath.Join(dir, rel))
+}
+
 // newGitSource creates a GitSource in the cluster and returns its key.
 func newGitSource(name, namespace string) types.NamespacedName {
 	GinkgoHelper()
@@ -43,6 +49,11 @@ func newGitSource(name, namespace string) types.NamespacedName {
 	Expect(k8sClient.Create(ctx, gs)).To(Succeed())
 	key := types.NamespacedName{Name: name, Namespace: namespace}
 	DeferCleanup(func() {
+		var fresh gitopsv1alpha1.GitSource
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &fresh); err == nil {
+			fresh.Finalizers = nil
+			_ = k8sClient.Update(ctx, &fresh)
+		}
 		_ = k8sClient.Delete(ctx, gs)
 	})
 	return key
