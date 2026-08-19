@@ -2,7 +2,10 @@ resources:
 - manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+# `make deploy IMG=...` rewrites this block with whatever tag it was given.
+# Left at the placeholder in version control: pinning a tag that only exists
+# on one machine would break a clean checkout.
 images:
 - name: controller
-  newName: mini-argo
-  newTag: b5095dc-144835
+  newName: controller
+  newTag: latest
