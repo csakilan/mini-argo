@@ -62,14 +62,16 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var sourceKind string
 	var sourceDir string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&sourceKind, "source", "git",
+		"Where manifests come from: \"git\" clones spec.repo, \"dir\" reads local disk.")
 	flag.StringVar(&sourceDir, "source-dir", ".",
-		"Root directory that a GitSource's spec.path is resolved against. "+
-			"Phase 3 reads manifests from local disk; Phase 5 replaces this with a Git clone.")
+		"With --source=dir, the root that a GitSource's spec.path is resolved against.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -183,10 +185,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The only place in the codebase that knows where manifests come from.
+	// Nothing in the reconcile loop changed when Git arrived, which is the
+	// Source interface paying for itself.
+	var manifestSource source.Source
+	switch sourceKind {
+	case "git":
+		manifestSource = source.GitFetcher{}
+	case "dir":
+		manifestSource = source.DirFetcher{Root: sourceDir}
+	default:
+		setupLog.Error(nil, "Unknown --source", "value", sourceKind, "want", "git or dir")
+		os.Exit(1)
+	}
+	setupLog.Info("Manifest source configured", "source", sourceKind)
+
 	if err := (&controller.GitSourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Source: source.DirFetcher{Root: sourceDir},
+		Source: manifestSource,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "gitsource")
 		os.Exit(1)

@@ -56,6 +56,11 @@ func (d DirFetcher) Fetch(ctx context.Context, spec gitopsv1alpha1.GitSourceSpec
 			return ctx.Err()
 		}
 		if entry.IsDir() {
+			// A clone puts an entire repository database inside the tree we
+			// are about to walk. None of it is manifests.
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

@@ -391,3 +391,21 @@ func TestDirFetcher_SymlinkInsideRootIsFollowed(t *testing.T) {
 		t.Fatalf("expected both the real file and the alias, got %d", len(got.Manifests))
 	}
 }
+
+func TestDirFetcher_SkipsGitDirectory(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "real.yaml", "kind: Real\n")
+	write(t, root, ".git/config.yaml", "kind: NotAManifest\n")
+	write(t, root, ".git/refs/heads/thing.yaml", "kind: AlsoNot\n")
+
+	got, err := DirFetcher{Root: root}.Fetch(context.Background(), specWithPath("."))
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(got.Manifests) != 1 {
+		t.Fatalf("expected only the real manifest, got %d", len(got.Manifests))
+	}
+	if !strings.Contains(string(got.Manifests[0]), "Real") {
+		t.Errorf("read something from .git: %q", got.Manifests[0])
+	}
+}

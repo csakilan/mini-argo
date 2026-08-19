@@ -6,9 +6,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: gitsource-sample
 spec:
-  # Phase 3 reads from local disk, so repo is recorded but not yet used.
-  repo: https://github.com/csakilan/mini-argo
+  repo: https://github.com/csakilan/argo-test
   branch: main
-  path: ./testdata/manifests
+  path: ./manifests
   interval: 30s
   prune: false
