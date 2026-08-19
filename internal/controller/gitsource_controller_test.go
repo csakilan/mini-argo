@@ -411,8 +411,11 @@ data:
 		Expect(cm.Labels).To(HaveKeyWithValue(OwnedByLabel, "default_contender-b"),
 			"the label records the most recent writer, and the previous one is not told")
 
+		// Phase 4 made the contention visible from one side: B reads A's
+		// values, sees they are not what B wants, and reports correcting
+		// them. A is never told anything happened.
 		Expect(statusOf(keyA).Phase).To(Equal(PhaseSynced))
-		Expect(statusOf(keyB).Phase).To(Equal(PhaseSynced))
+		Expect(statusOf(keyB).Phase).To(Equal(PhaseDrifted))
 	})
 
 	It("writes no status at all when nothing changed", func() {
