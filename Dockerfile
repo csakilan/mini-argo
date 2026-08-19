@@ -1,3 +1,17 @@
+# Build the status page.
+#
+# It is built here rather than committed as a dist/ directory, so the image
+# always matches the source it was built from and nobody has to remember to run
+# `make ui` before `make docker-build`.
+FROM node:22-alpine AS ui
+WORKDIR /ui
+# Copy the lockfile first so dependency installation caches independently of
+# the page source.
+COPY web/dashboard/package.json web/dashboard/package-lock.json ./
+RUN npm ci
+COPY web/dashboard/ ./
+RUN npm run build
+
 # Build the manager binary
 FROM golang:1.26 AS builder
 ARG TARGETOS
@@ -23,9 +37,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
+#
+# distroless/static carries CA certificates, which go-git needs in order to
+# clone over HTTPS. It carries no shell and no git binary: go-git is pure Go,
+# so there is nothing else to install.
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=ui /ui/dist /ui
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

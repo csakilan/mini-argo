@@ -63,11 +63,22 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --status-api-address=:8082
+          - --ui-dir=/ui
         image: controller:latest
+        # Deliberately not Always. The image is built locally and pushed into
+        # the kind node with `kind load docker-image`, so it exists on the node
+        # but in no registry; Always would fail to pull. The trap this guards
+        # against, a rebuilt :dev tag silently running the old binary, is
+        # handled by tagging each build uniquely instead. See `make demo`.
+        imagePullPolicy: IfNotPresent
         name: manager
         ports:
         - containerPort: 8081
           name: health
+          protocol: TCP
+        - containerPort: 8082
+          name: status-api
           protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
@@ -75,6 +86,12 @@ spec:
           capabilities:
             drop:
             - "ALL"
+        # GitFetcher clones into a temp directory on every sync, and the root
+        # filesystem is read-only. Without somewhere writable the controller
+        # runs locally and fails the moment it is deployed.
+        volumeMounts:
+        - name: clone-scratch
+          mountPath: /tmp
         livenessProbe:
           httpGet:
             path: /healthz
@@ -96,7 +113,8 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+      volumes:
+      - name: clone-scratch
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

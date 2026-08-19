@@ -1,135 +1,248 @@
 # mini-argo
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A small GitOps operator for Kubernetes. You point it at a public Git repository
+full of YAML, and it continuously makes your cluster match that repository,
+including undoing changes somebody makes by hand.
 
-## Getting Started
+It is a deliberately scoped-down reimplementation of the core of ArgoCD and
+Flux, built to understand how they work.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+---
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+## The demo
 
-```sh
-make docker-build docker-push IMG=<some-registry>/mini-argo:tag
+```console
+$ kubectl get deployment web -n demo
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    3/3     3            3           2m
+
+$ kubectl scale deployment web -n demo --replicas=9
+deployment.apps/web scaled
+
+$ kubectl get deployment web -n demo -o jsonpath='{.spec.replicas}'
+9
+
+# ...wait one interval...
+
+$ kubectl get deployment web -n demo -o jsonpath='{.spec.replicas}'
+3
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+**Nothing told the controller that happened.** No event fired, no webhook was
+called, no notification was delivered. mini-argo watches `GitSource` objects
+and nothing else, so a Deployment changing produces no signal it can hear.
 
-**Install the CRDs into the cluster:**
+It woke up on a timer, read the live object, compared it to Git, and closed the
+gap. That is *level-triggered reconciliation*, and it is the whole point.
 
-```sh
-make install
+Run above: scaled at 15:01:25, corrected by 15:01:50.
+
+---
+
+## Try it
+
+Needs Docker, [kind](https://kind.sigs.k8s.io), and Go 1.26.
+
+```bash
+make demo
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+That creates a cluster if you have not got one, builds the image, loads it into
+the cluster, installs the CRD, deploys the operator, and points a `GitSource`
+at [csakilan/argo-test](https://github.com/csakilan/argo-test).
 
-```sh
-make deploy IMG=<some-registry>/mini-argo:tag
+Then watch it work:
+
+```bash
+kubectl port-forward -n mini-argo-system deployment/mini-argo-controller-manager 8082:8082
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+Open <http://localhost:8082> and break something:
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
+```bash
+kubectl scale deployment web -n demo --replicas=7
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+Tear it down with `make demo-clean`.
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+---
 
-```sh
-kubectl delete -k config/samples/
+## What it does
+
+You create one of these:
+
+```yaml
+apiVersion: gitops.miniargo.dev/v1alpha1
+kind: GitSource
+metadata:
+  name: demo-app
+spec:
+  repo: https://github.com/csakilan/argo-test
+  branch: main
+  path: ./manifests
+  interval: 30s
+  prune: false
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+and mini-argo will:
 
-```sh
-make uninstall
+| | |
+|---|---|
+| Clone that repository every `interval` | Shallow, single-branch, thrown away afterwards |
+| Read every `.yaml` and `.yml` under `path` | Recursively, in a stable order, multi-document files included |
+| Apply everything to the cluster | Server-side apply, under the field owner `mini-argo` |
+| Revert anything changed by hand | Because apply owns those fields |
+| Report what it corrected | `status.driftedObjects`, down to the field path |
+| Remember what it owns | `status.inventory` |
+| Delete objects removed from Git | Opt-in per source, off by default |
+| Clean up when the GitSource is deleted | Via a finalizer, so it is guaranteed rather than best-effort |
+| Show all of it on a page | Read-only, served by the same binary |
+
+---
+
+## What it deliberately does not do
+
+This list matters as much as the one above. Every item is a real feature of the
+real tools, left out on purpose.
+
+| Not built | Why it is genuinely hard |
+|---|---|
+| **Helm or Kustomize rendering** | Turns "read files" into running a template engine with values, dependencies, and CRD ordering. A different project. |
+| **Private repository auth** | SSH keys and tokens mean secret management, rotation, and a credential model. Orthogonal to reconciliation. |
+| **Multi-cluster** | Needs credentials per cluster, connection health tracking, and a story for partial failure. |
+| **Sync waves and ordering** | Requires a dependency graph and knowing when an object is "done", which needs the next row. |
+| **Health assessment** | "Is this Deployment healthy?" has a different answer per resource kind. ArgoCD ships per-kind Lua scripts for exactly this. |
+| **Per-source RBAC** | Requires impersonation so a GitSource cannot apply things its owner could not. Real security design. |
+| **Webhook-triggered sync** | Needs a public endpoint, signature verification, and delivery guarantees. And you still need the polling loop as a backstop, or a dropped delivery means drift persists forever. |
+| **Creating target namespaces** | A missing namespace is reported as an error and retried. Auto-creating is how a GitOps tool quietly sprawls across a cluster. ArgoCD makes it opt-in (`CreateNamespace=true`) for the same reason. |
+
+It is about 900 lines of Go, and it does not do half of what Flux does. But I
+understand exactly why those parts are hard now.
+
+---
+
+## How it works
+
+### One loop
+
+```
+every spec.interval, for each GitSource:
+
+    fetch     ──►  clone the repo, read the YAML          (Source interface)
+    parse     ──►  bytes → Kubernetes objects             (pure function)
+    label     ──►  stamp each object as owned by this source
+    compare   ──►  read what's live, note what differs     (→ driftedObjects)
+    apply     ──►  server-side apply each object           (this is the fix)
+    inventory ──►  record what was applied                 (→ status)
+    prune     ──►  delete what we used to own but no longer (if spec.prune)
+    status    ──►  write it down, if it changed
+    requeue   ──►  "call me again in spec.interval"
 ```
 
-**UnDeploy the controller from the cluster:**
+### Apply *is* the correction
 
-```sh
-make undeploy
+There is no `if different, patch it` branch anywhere in this codebase. Apply
+declares *these fields should hold these values, and this manager owns them*,
+and the API server enforces it. Someone else's manual change to an owned field
+simply loses.
+
+```bash
+kubectl get deployment web -n demo -o jsonpath='{.metadata.managedFields[*].manager}'
 ```
 
-## Project Distribution
+### Detection and correction are different jobs
 
-Following the options to release and provide this solution to the users.
+Apply corrects without ever reading. The controller reads the live object
+anyway, purely so status can *report* what changed. Delete `internal/drift`
+entirely and drift is still corrected, silently. That separation is why the
+read before the apply is not redundant.
 
-### By providing a bundle with all YAML files
+### The inventory is what makes deletion safe
 
-1. Build the installer for the image built and published in the registry:
+The naive rule, "delete whatever is in the cluster but not in Git", would
+destroy objects the controller never created. And the ownership label cannot
+answer "what do I own?" on its own: Kubernetes has no cross-type label query,
+so answering it would mean enumerating every resource type in the cluster.
 
-```sh
-make build-installer IMG=<some-registry>/mini-argo:tag
+So mini-argo keeps a receipt. Pruning deletes `previous inventory − current
+desired`, never touches anything whose ownership label names somebody else, and
+is skipped entirely if any object failed to apply that pass.
+
+---
+
+## Layout
+
+```
+api/v1alpha1/          the GitSource type; the CRD is generated from it
+cmd/main.go            wiring; the only file that knows where manifests come from
+internal/
+  manifests/           YAML bytes → objects            pure, no cluster
+  source/              Snapshot + Source; DirFetcher, GitFetcher
+  drift/               desired vs live comparison      pure, no cluster
+  inventory/           set difference over ResourceRef pure, no cluster
+  controller/          the reconcile loop              the only part needing a cluster
+  httpapi/             read-only GET /api/gitsources
+web/dashboard/         React + Vite status page
+config/                generated CRD, RBAC, and deployment manifests
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+Everything that is a pure function lives outside the controller, which is what
+lets most of the logic be tested with plain `go test` and no API server.
 
-2. Using the installer
+---
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+## Testing
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/mini-argo/<tag or branch>/dist/install.yaml
+```bash
+make test   # unit tests, plus envtest for the controller
+make lint
 ```
 
-### By providing a Helm Chart
+**envtest** runs the real `kube-apiserver` and `etcd` binaries locally, but with
+no kubelet and no scheduler. Objects get created and no pod ever runs. A
+Deployment sits at 0 ready replicas forever, and that is fine, because the only
+question these tests ask is whether the controller wrote the right objects with
+the right fields.
 
-1. Build the chart using the optional helm plugin
+| Package | Coverage |
+|---|---|
+| `internal/inventory` | 100% |
+| `internal/manifests` | 96% |
+| `internal/httpapi` | 90% |
+| `internal/drift` | 91% |
+| `internal/controller` | 88% |
+| `internal/source` | 84% |
 
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
+The central test is the product specification:
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+> given a GitSource has synced a Deployment with 2 replicas, when somebody
+> scales it to 5 behind the controller's back, then the next reconcile puts it
+> back to 2, and `status.driftedObjects` names that Deployment.
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+---
 
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+## Things worth knowing
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+**You cannot delete a GitSource while the controller is down.** The finalizer
+holds it in `Terminating` until cleanup runs. That is the feature working:
+nothing leaks. Start the controller and it completes within seconds, even after
+hours.
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+**`kubectl annotate` does not trigger a sync.** The watch is filtered to events
+that change `metadata.generation`, which is what stops the controller waking
+itself up every time it writes status. Annotations do not bump generation. Edit
+`spec`, or wait for the interval.
 
-## License
+**Rebuilding a `:dev` tag can silently keep running the old binary.** kind
+caches images by tag. `make demo` tags every build uniquely and verifies the
+digest the pod actually pulled, rather than trusting `kubectl rollout status`,
+which can report success while the previous image is still running.
 
-Copyright 2026.
+**Pruning is off by default and should stay that way.** Deleting a GitSource is
+not a request to delete the workloads.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+---
 
-    http://www.apache.org/licenses/LICENSE-2.0
+## Licence
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache 2.0.

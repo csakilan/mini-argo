@@ -9,3 +9,16 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include the status page sources, which are built inside the image.
+# node_modules and dist are deliberately left out: the build produces its own.
+!web
+!web/dashboard
+!web/dashboard/package.json
+!web/dashboard/package-lock.json
+!web/dashboard/vite.config.js
+!web/dashboard/index.html
+!web/dashboard/src
+!web/dashboard/src/**
+web/dashboard/node_modules
+web/dashboard/dist

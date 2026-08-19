@@ -94,6 +94,17 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: demo
+demo: ## Build, deploy, and sync from a real repo on a fresh cluster
+	./hack/demo.sh
+
+.PHONY: demo-clean
+demo-clean: ## Remove everything `make demo` created, leaving the cluster
+	-kubectl delete -f config/samples/gitops_v1alpha1_gitsource.yaml --ignore-not-found
+	-kubectl delete namespace demo --ignore-not-found
+	-$(MAKE) undeploy ignore-not-found=true
+	-$(MAKE) uninstall ignore-not-found=true
+
 .PHONY: ui
 ui: ## Build the status page into web/dashboard/dist
 	cd web/dashboard && npm install && npm run build
