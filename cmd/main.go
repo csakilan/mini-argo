@@ -37,6 +37,7 @@ import (
 
 	gitopsv1alpha1 "github.com/csakilan/mini-argo/api/v1alpha1"
 	"github.com/csakilan/mini-argo/internal/controller"
+	"github.com/csakilan/mini-argo/internal/httpapi"
 	"github.com/csakilan/mini-argo/internal/source"
 	// +kubebuilder:scaffold:imports
 )
@@ -64,6 +65,8 @@ func main() {
 	var enableHTTP2 bool
 	var sourceKind string
 	var sourceDir string
+	var statusAPIAddr string
+	var uiDir string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -72,6 +75,10 @@ func main() {
 		"Where manifests come from: \"git\" clones spec.repo, \"dir\" reads local disk.")
 	flag.StringVar(&sourceDir, "source-dir", ".",
 		"With --source=dir, the root that a GitSource's spec.path is resolved against.")
+	flag.StringVar(&statusAPIAddr, "status-api-address", ":8082",
+		"Address for the read-only status API. Empty disables it.")
+	flag.StringVar(&uiDir, "ui-dir", "",
+		"Directory of built status page files to serve at /. Empty serves the API only.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -209,6 +216,20 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	if statusAPIAddr != "" {
+		// Added to the manager rather than started separately, so it shares
+		// the manager's lifecycle and shuts down with everything else. The
+		// client is the manager's cached one, so listing costs a map lookup.
+		if err := mgr.Add(&httpapi.Server{
+			Client: mgr.GetClient(),
+			Addr:   statusAPIAddr,
+			UIDir:  uiDir,
+		}); err != nil {
+			setupLog.Error(err, "Failed to add the status API")
+			os.Exit(1)
+		}
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")

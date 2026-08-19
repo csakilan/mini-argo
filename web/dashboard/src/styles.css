@@ -1,0 +1,452 @@
+/*
+  mini-argo status page.
+
+  Drafting stock: a mid-tone warm grey ground rather than light or dark, read
+  as a drawing on tinted paper or a physical instrument panel. One working
+  accent, burnt orange, which appears only where the controller had to correct
+  something. Nothing is coloured for decoration.
+*/
+
+:root {
+  --ground: #c9c6bc;
+  --panel: #d4d1c8;
+  --ink: #23201a;
+  --ink-soft: #4a4535;
+  --rule: #8f8b80;
+
+  --quiet: #2e5e4e;   /* nothing needed doing */
+  --acted: #a85b1e;   /* drift was corrected */
+  --broken: #8c2f22;  /* the sync failed */
+
+  --font-label: "Avenir Next Condensed", "HelveticaNeue-CondensedBold",
+    "Arial Narrow", system-ui, sans-serif;
+  --font-body: Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+  --font-data: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
+
+  --gutter: clamp(1.25rem, 4vw, 3rem);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  font-synthesis-weight: none;
+}
+
+.sheet {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 0 var(--gutter) 4rem;
+}
+
+/* masthead ---------------------------------------------------------------- */
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem 2rem;
+  padding: 2.75rem 0 1rem;
+  border-bottom: 2px solid var(--ink);
+}
+
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.mark {
+  font-family: var(--font-label);
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.eyebrow,
+.label,
+dt {
+  font-family: var(--font-label);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.readout {
+  display: flex;
+  gap: 2rem;
+  margin: 0;
+}
+
+.readout div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.readout dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 0.9rem;
+}
+
+.is-live {
+  color: var(--quiet);
+}
+.is-broken {
+  color: var(--broken);
+}
+
+/* one source -------------------------------------------------------------- */
+
+.source {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem 2rem;
+  padding: 2rem 0 1.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.identity h2 {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.namespace {
+  margin: 0.1rem 0 0;
+  font-family: var(--font-data);
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.phase {
+  margin: 0;
+  text-align: right;
+  justify-self: end;
+}
+
+.phase-word {
+  display: block;
+  font-family: var(--font-label);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.phase-gloss {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.is-synced .phase-word {
+  color: var(--quiet);
+}
+.is-drifted .phase-word {
+  color: var(--acted);
+}
+.is-error .phase-word {
+  color: var(--broken);
+}
+.is-pending .phase-word {
+  color: var(--ink-soft);
+}
+
+/* facts ------------------------------------------------------------------- */
+
+.facts {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.9rem 1.5rem;
+  margin: 1.25rem 0 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule);
+}
+
+.facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.data {
+  font-family: var(--font-data);
+  font-size: 0.88rem;
+  overflow-wrap: break-word;
+}
+
+/* The repository URL is the one field long enough to need two columns. */
+.facts .wide {
+  grid-column: span 2;
+}
+
+.quiet {
+  color: var(--ink-soft);
+}
+
+/* the tick track ---------------------------------------------------------- */
+
+.track {
+  grid-column: 1 / -1;
+  margin-top: 1.5rem;
+}
+
+.ticks {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px;
+  height: 26px;
+  margin-top: 0.55rem;
+  padding-left: 1px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.tick {
+  width: 4px;
+  height: 11px;
+  background: var(--quiet);
+  animation: raise 220ms ease-out;
+}
+
+.tick.is-drifted {
+  height: 24px;
+  background: var(--acted);
+}
+
+.tick.is-error {
+  height: 24px;
+  background: var(--broken);
+}
+
+.tick.is-pending {
+  height: 6px;
+  background: var(--rule);
+}
+
+/* Slots not yet filled. The track keeps its shape so it reads as an
+   instrument waiting rather than a broken rule. */
+.tick.is-empty {
+  height: 4px;
+  background: var(--rule);
+  opacity: 0.35;
+  animation: none;
+}
+
+.count {
+  float: right;
+  font-family: var(--font-data);
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+@keyframes raise {
+  from {
+    height: 0;
+  }
+}
+
+.waiting {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+/* corrections and failures ------------------------------------------------ */
+
+.corrections,
+.failure {
+  grid-column: 1 / -1;
+  margin-top: 1.4rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--panel);
+}
+
+.corrections .label {
+  color: var(--acted);
+}
+
+.failure {
+  margin-bottom: 0;
+  font-family: var(--font-data);
+  font-size: 0.85rem;
+  color: var(--broken);
+}
+
+.corrections ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.corrections li {
+  margin: 0.15rem 0;
+}
+
+.detail {
+  margin: 0.6rem 0 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+/* inventory --------------------------------------------------------------- */
+
+.inventory {
+  grid-column: 1 / -1;
+  margin-top: 1.2rem;
+}
+
+.inventory summary {
+  font-family: var(--font-label);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.inventory summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.inventory ul {
+  margin: 0.6rem 0 0;
+  padding-left: 1.1rem;
+}
+
+/* notices ----------------------------------------------------------------- */
+
+.notice {
+  padding: 2.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.notice h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.35rem;
+}
+
+.notice.is-broken h2 {
+  color: var(--broken);
+}
+
+.notice p {
+  margin: 0 0 0.6rem;
+}
+
+pre {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  background: var(--panel);
+  font-size: 0.85rem;
+}
+
+/* skeleton ---------------------------------------------------------------- */
+
+.ghost {
+  background: var(--panel);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.ghost-title {
+  width: 12rem;
+  height: 1.6rem;
+}
+.ghost-sub {
+  width: 5rem;
+  height: 0.9rem;
+  margin-top: 0.4rem;
+}
+.ghost-phase {
+  width: 7rem;
+  height: 2.2rem;
+  justify-self: end;
+}
+.ghost-facts {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.9rem 1.5rem;
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule);
+}
+.ghost-fact {
+  height: 2.2rem;
+}
+.ghost-track {
+  grid-column: 1 / -1;
+  height: 24px;
+  margin-top: 1.9rem;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* footer ------------------------------------------------------------------ */
+
+footer {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+
+footer p {
+  margin: 0 0 0.4rem;
+  max-width: 42rem;
+  font-size: 0.85rem;
+}
+
+/* small screens ----------------------------------------------------------- */
+
+@media (max-width: 40rem) {
+  .source {
+    grid-template-columns: 1fr;
+  }
+  .phase {
+    text-align: left;
+    justify-self: start;
+    margin-top: 0.5rem;
+  }
+  .readout {
+    gap: 1.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

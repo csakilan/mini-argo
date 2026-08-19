@@ -3,6 +3,7 @@ package controller
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -429,7 +430,7 @@ data:
 		Expect(statusOf(keyB).Phase).To(Equal(PhaseDrifted))
 	})
 
-	It("writes no status at all when nothing changed", func() {
+	It("writes no status at all while a sync keeps failing", func() {
 		dir := GinkgoT().TempDir()
 		writeManifest(dir, "cm.yaml", `
 apiVersion: v1
@@ -439,7 +440,14 @@ metadata:
   namespace: default
 `)
 		key := newGitSource("status-guard", defaultNS)
+
+		// Break it, so every pass produces the identical Error status.
+		var gs gitopsv1alpha1.GitSource
+		Expect(k8sClient.Get(ctx, key, &gs)).To(Succeed())
+		gs.Spec.Path = "no-such-directory"
+		Expect(k8sClient.Update(ctx, &gs)).To(Succeed())
 		Expect(reconcileOnce(dir, key)).To(Succeed())
+		Expect(statusOf(key).Phase).To(Equal(PhaseError))
 
 		var before gitopsv1alpha1.GitSource
 		Expect(k8sClient.Get(ctx, key, &before)).To(Succeed())
@@ -451,7 +459,29 @@ metadata:
 		var after gitopsv1alpha1.GitSource
 		Expect(k8sClient.Get(ctx, key, &after)).To(Succeed())
 		Expect(after.ResourceVersion).To(Equal(before.ResourceVersion),
-			"an unguarded status write would loop the controller forever")
+			"a GitSource pointing at a broken source must not write status forever")
+	})
+
+	It("records a fresh lastSyncTime on every successful pass", func() {
+		dir := GinkgoT().TempDir()
+		writeManifest(dir, "cm.yaml", `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-cm
+  namespace: default
+`)
+		key := newGitSource("sync-heartbeat", defaultNS)
+		Expect(reconcileOnce(dir, key)).To(Succeed())
+		first := statusOf(key).LastSyncTime
+		Expect(first).NotTo(BeNil())
+
+		time.Sleep(1100 * time.Millisecond) // metav1.Time has second precision
+		Expect(reconcileOnce(dir, key)).To(Succeed())
+
+		second := statusOf(key).LastSyncTime
+		Expect(second.Time.After(first.Time)).To(BeTrue(),
+			"a page showing 'last sync' needs this to move, or it lies")
 	})
 
 	It("reports an unknown kind rather than crashing", func() {

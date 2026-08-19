@@ -94,6 +94,18 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: ui
+ui: ## Build the status page into web/dashboard/dist
+	cd web/dashboard && npm install && npm run build
+
+.PHONY: ui-dev
+ui-dev: ## Serve the status page in development, proxying /api to :8082
+	cd web/dashboard && npm install && npm run dev
+
+.PHONY: run-with-ui
+run-with-ui: ui manifests generate fmt vet ## Run the controller serving the built status page
+	go run ./cmd/main.go --ui-dir=web/dashboard/dist
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

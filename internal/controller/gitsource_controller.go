@@ -450,12 +450,21 @@ func (r *GitSourceReconciler) report(ctx context.Context, gs *gitopsv1alpha1.Git
 	return ctrl.Result{RequeueAfter: requeueAfter(gs)}, nil
 }
 
-// statusMeaningfullyEqual ignores LastSyncTime, which moves on every pass and
-// would make the guard useless.
+// statusMeaningfullyEqual includes LastSyncTime, deliberately.
+//
+// A successful sync always carries a fresh timestamp, so it always writes, and
+// the field means what its name says: when this last actually synced. A failed
+// attempt passes the previous timestamp through unchanged, so a GitSource
+// pointing at a broken repository settles into writing nothing at all rather
+// than generating an API write every interval forever.
+//
+// Writing on every successful pass is only safe because the watch filters out
+// status-only updates. Without that predicate this would be a hot loop.
 func statusMeaningfullyEqual(a, b gitopsv1alpha1.GitSourceStatus) bool {
 	return a.Phase == b.Phase &&
 		a.Message == b.Message &&
 		a.LastSyncedCommit == b.LastSyncedCommit &&
+		a.LastSyncTime.Equal(b.LastSyncTime) &&
 		slices.Equal(a.DriftedObjects, b.DriftedObjects) &&
 		slices.Equal(a.Inventory, b.Inventory)
 }
